@@ -1,0 +1,65 @@
+#!/usr/bin/env python
+"""
+Watch a directory for the creation or modification of files with a given
+extension, and then run the first line of any such file as a command line
+executable. This can be used to trigger compilation of kernels for OpenMM
+on cray compute nodes.
+"""
+import os
+import sys
+import time
+import argparse
+import subprocess
+from watchdog.observers import Observer
+from watchdog.events import RegexMatchingEventHandler
+
+
+class CudaCompiler(RegexMatchingEventHandler):
+    events = set()
+
+    def __init__(self, *extensions):
+        for e in extensions:
+            if not e.startswith('.'):
+                raise ValueError('extension must start with "."')
+        regexes = [r'.*\%s' % e for e in extensions]
+        super(CudaCompiler, self).__init__(regexes=regexes, ignore_regexes=[])
+
+    def on_modified(self, event):
+        return self.on_created(event)
+
+    def on_created(self, event):
+        src_path = event.src_path
+        if not os.path.isfile(src_path) or src_path in self.events:
+            return
+
+        with open(src_path) as f:
+            command = f.readline().strip()
+
+        # strip any leading comments on the command
+        command = command.lstrip('#/ ')
+
+        print src_path, ":",  command
+        subprocess.check_output(command.split())
+
+        self.events.add(src_path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--path', default='.', help='path to the directory to watch. default="."')
+    parser.add_argument('--ext', nargs='+', default=['.cu'], help='file extension(s) to watch. default=".cu"')
+    args = parser.parse_args()
+
+    event_handler = CudaCompiler(*args.ext)
+    observer = Observer()
+    observer.schedule(event_handler, args.path, recursive=False)
+    observer.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+if __name__ == "__main__":
+    main()
